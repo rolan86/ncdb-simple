@@ -5,6 +5,8 @@ from app.models import User, TableMetadata
 from sqlalchemy import inspect, Table, text
 import json
 import logging
+import traceback
+import sqlalchemy
 
 bp = Blueprint('main', __name__)
 
@@ -20,7 +22,7 @@ def login():
         username = request.form['username'].lower()
         password = request.form['password']
         logging.info(f"Login attempt for username: {username}")
-        
+
         user = User.query.filter_by(username=username).first()
         if user:
             logging.info(f"User found: {user.username}")
@@ -32,7 +34,7 @@ def login():
                 logging.info("Password check failed")
         else:
             logging.info("User not found")
-        
+
         flash('Invalid username or password')
     return render_template('login.html')
 
@@ -69,11 +71,11 @@ def dashboard():
 def get_table_data(table_name):
     logging.info(f"Attempting to fetch data for table: {table_name}")
     logging.info(f"User {current_user.username} accessible tables: {current_user.get_accessible_tables()}")
-    
+
     if table_name not in current_user.get_accessible_tables():
         logging.warning(f"Access denied for user {current_user.username} to table {table_name}")
         return jsonify({'error': 'Access denied'}), 403
-    
+
     try:
         inspector = inspect(db.engine)
         if table_name not in inspector.get_table_names():
@@ -82,10 +84,10 @@ def get_table_data(table_name):
 
         table = Table(table_name, db.metadata, autoload_with=db.engine)
         columns = [column.name for column in table.columns]
-        
+
         result = db.session.execute(table.select()).fetchall()
         logging.info(f"Fetched {len(result)} rows from {table_name}")
-        
+
         data = []
         for row in result:
             row_dict = {col: getattr(row, col) for col in columns}
@@ -150,27 +152,57 @@ def seed_sample_data():
 @bp.route('/update_table_data/<table_name>', methods=['POST'])
 @login_required
 def update_table_data(table_name):
-    if not current_user.can_edit(table_name):
-        return jsonify({'error': 'Access denied'}), 403
-    
-    data = request.json
-    table = db.metadata.tables.get(table_name)
-    if not table:
-        return jsonify({'error': 'Table not found'}), 404
+    try:
+        if not current_user.can_edit(table_name):
+            return jsonify({'error': 'Access denied'}), 403
 
-    user_data = json.loads(data['user_data'])
-    
-    if data['id']:
-        # Update existing row
-        stmt = table.update().where(table.c.id == data['id']).values(**user_data)
-        db.session.execute(stmt)
-    else:
-        # Insert new row
-        stmt = table.insert().values(**user_data)
-        db.session.execute(stmt)
+        data = request.json
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
 
-    db.session.commit()
-    return jsonify({'success': True})
+        logging.info(f"Received data for table {table_name}: {data}")
+
+        # Check if the table exists
+        inspector = db.inspect(db.engine)
+        if not inspector.has_table(table_name):
+            return jsonify({'error': f'Table {table_name} not found'}), 404
+
+        user_data = json.loads(data['user_data'])
+        logging.info(f"Parsed user_data: {user_data}")
+
+        if data['id'] is None:
+            # Insert new row
+            columns = ', '.join(user_data.keys())
+            values = ', '.join([':' + k for k in user_data.keys()])
+            stmt = text(f"INSERT INTO {table_name} ({columns}) VALUES ({values})")
+            result = db.session.execute(stmt, user_data)
+            new_id = result.lastrowid
+            db.session.commit()
+            logging.info(f"Inserted new row with id {new_id}")
+            return jsonify({'success': True, 'id': new_id})
+        else:
+            # Update existing row
+            set_clause = ', '.join([f"{k} = :{k}" for k in user_data.keys()])
+            stmt = text(f"UPDATE {table_name} SET {set_clause} WHERE id = :id")
+            user_data['id'] = data['id']
+            db.session.execute(stmt, user_data)
+            db.session.commit()
+            logging.info(f"Updated row with id {data['id']}")
+            return jsonify({'success': True})
+
+    except json.JSONDecodeError as e:
+        db.session.rollback()
+        logging.error(f"JSON decode error: {str(e)}")
+        return jsonify({'error': 'Invalid JSON in user_data'}), 400
+    except sqlalchemy.exc.SQLAlchemyError as e:
+        db.session.rollback()
+        logging.error(f"Database error: {str(e)}")
+        return jsonify({'error': 'Database error occurred'}), 500
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Unexpected error in update_table_data: {str(e)}")
+        logging.error(traceback.format_exc())
+        return jsonify({'error': 'An unexpected error occurred', 'details': str(e)}), 500
 
 @bp.route('/test_users')
 def test_users():
@@ -178,3 +210,8 @@ def test_users():
     user_list = [{"id": user.id, "username": user.username, "password_hash": user.password_hash} for user in users]
     return jsonify(user_list)
 
+@bp.route('/check_edit_permission/<table_name>')
+@login_required
+def check_edit_permission(table_name):
+    can_edit = current_user.can_edit(table_name)
+    return jsonify({'canEdit': can_edit})
