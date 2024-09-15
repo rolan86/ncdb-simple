@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}Login - Data Access Application{% endblock %}
+
+{% block content %}
+<div class="max-w-md mx-auto bg-white rounded-lg overflow-hidden shadow-lg">
+    <div class="px-6 py-8">
+        <h2 class="text-2xl font-bold mb-6 text-center">Login to Your Account</h2>
+        <form method="POST" action="{{ url_for('main.login') }}">
+            <div class="mb-4">
+                <label for="username" class="block text-gray-700 text-sm font-bold mb-2">Username:</label>
+                <input type="text" id="username" name="username" required class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:border-blue-500">
+            </div>
+            <div class="mb-6">
+                <label for="password" class="block text-gray-700 text-sm font-bold mb-2">Password:</label>
+                <input type="password" id="password" name="password" required class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:border-blue-500">
+            </div>
+            <button type="submit" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition duration-300">
+                Login
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}
