@@ -2,6 +2,7 @@ from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 from app import db
 import json
+from sqlalchemy import inspect
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -40,8 +41,32 @@ class User(UserMixin, db.Model):
         permissions = self.get_permissions()
         return table_name in permissions and 'edit' in permissions[table_name]
 
+    def can_view_core_table(self):
+        permissions = self.get_permissions()
+        return 'core_table' in permissions and 'view' in permissions['core_table']
+
+    def can_edit_core_table(self):
+        permissions = self.get_permissions()
+        return 'core_table' in permissions and 'edit' in permissions['core_table']
+
 class TableMetadata(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     table_name = db.Column(db.String(64), unique=True, nullable=False)
     description = db.Column(db.String(256))
 
+class CoreTable(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    reference_id = db.Column(db.String(50), unique=True, nullable=False)
+    common_field1 = db.Column(db.String(100))
+    common_field2 = db.Column(db.String(100))
+
+    @classmethod
+    def get_fields(cls):
+        return [column.key for column in cls.__table__.columns if column.key != 'id']
+
+class CoreTableAssociation(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    table_name = db.Column(db.String(64), nullable=False)
+    table_id = db.Column(db.Integer, nullable=False)
+    core_id = db.Column(db.Integer, db.ForeignKey('core_table.id'), nullable=False)
+    core = db.relationship('CoreTable', backref=db.backref('associations', lazy=True))

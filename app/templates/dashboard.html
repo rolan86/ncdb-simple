@@ -1,171 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 
-<div x-data="{ 
-    selectedTable: '', 
-    viewMode: 'spreadsheet',
-    tableData: [],
-    formFields: [],
-    formData: {},
-    async loadTableData() {
-        if (!this.selectedTable) return;
-        try {
-            const response = await fetch(`/get_table_data/${this.selectedTable}/${this.viewMode}`);
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            const data = await response.json();
-            if (this.viewMode === 'form') {
-                this.formFields = data;
-                this.initForm();
-            } else {
-                this.tableData = data;
-            }
-            if (this.viewMode === 'spreadsheet') {
-                this.renderSpreadsheet();
-            } else if (this.viewMode === 'list') {
-                this.renderList();
-            }
-        } catch (e) {
-            console.error('Error loading table data:', e);
-            alert('Error loading table data. Please check the console for more information.');
-        }
-    },
-    renderSpreadsheet() {
-        const container = document.getElementById('spreadsheet');
-        container.innerHTML = '';
-        if (!this.tableData || this.tableData.length === 0) {
-            container.innerHTML = '<p>No data available for this table.</p>';
-            return;
-        }
-
-        const table = document.createElement('table');
-        table.className = 'w-full border-collapse border border-gray-300';
-
-        // Create header
-        const header = table.createTHead();
-        const headerRow = header.insertRow();
-        const userData = JSON.parse(this.tableData[0].user_data);
-        ['id', ...Object.keys(userData)].forEach(key => {
-            const th = document.createElement('th');
-            th.textContent = key;
-            th.className = 'border border-gray-300 p-2 bg-gray-100';
-            headerRow.appendChild(th);
-        });
-
-        // Create body
-        const body = table.createTBody();
-        this.tableData.forEach(row => {
-            const tr = body.insertRow();
-            const userData = JSON.parse(row.user_data);
-            
-            // Add id cell
-            const idCell = tr.insertCell();
-            idCell.textContent = row.id;
-            idCell.className = 'border border-gray-300 p-2';
-            
-            // Add other cells
-            Object.entries(userData).forEach(([key, value]) => {
-                const td = tr.insertCell();
-                td.textContent = value;
-                td.className = 'border border-gray-300 p-2';
-                td.contentEditable = true;
-                td.addEventListener('blur', () => this.updateCell(row.id, key, td.textContent));
-            });
-        });
-
-        container.appendChild(table);
-    },
-    renderList() {
-        const container = document.getElementById('list-view');
-        container.innerHTML = '';
-        if (!this.tableData || this.tableData.length === 0) {
-            container.innerHTML = '<p>No data available for this table.</p>';
-            return;
-        }
-        const ul = document.createElement('ul');
-        ul.className = 'space-y-4';
-        this.tableData.forEach(row => {
-            const li = document.createElement('li');
-            li.className = 'border p-4 rounded';
-            const userData = JSON.parse(row.user_data);
-            li.innerHTML = `
-                <p><strong>ID:</strong> ${row.id}</p>
-                ${Object.entries(userData).map(([key, value]) => `
-                    <p><strong>${key}:</strong> ${value}</p>
-                `).join('')}
-            `;
-            ul.appendChild(li);
-        });
-        container.appendChild(ul);
-    },
-    updateCell(rowId, column, value) {
-        this.updateTableData(rowId, column, value);
-    },
-    initForm() {
-        this.formData = {};
-        this.formFields.forEach(field => {
-            this.formData[field] = '';
-        });
-    },
-    async submitForm() {
-        try {
-            const response = await fetch(`/add_table_data/${this.selectedTable}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    user_data: JSON.stringify(this.formData)
-                }),
-            });
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            const result = await response.json();
-            if (result.error) {
-                throw new Error(result.error);
-            }
-            alert('Data added successfully!');
-            this.loadTableData();
-        } catch (e) {
-            console.error('Error adding table data:', e);
-            alert('Error adding table data. Please check the console for more information.');
-        }
-    },
-    async updateTableData(rowId, column, value) {
-        try {
-            const rowData = this.tableData.find(row => row.id === rowId);
-            if (!rowData) throw new Error('Row not found');
-            
-            const userData = JSON.parse(rowData.user_data);
-            userData[column] = value;
-
-            const response = await fetch(`/update_table_data/${this.selectedTable}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    id: rowId,
-                    user_data: JSON.stringify(userData)
-                }),
-            });
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            const result = await response.json();
-            if (result.error) {
-                throw new Error(result.error);
-            }
-            // Update local data
-            rowData.user_data = JSON.stringify(userData);
-        } catch (e) {
-            console.error('Error updating table data:', e);
-            alert('Error updating table data. Please check the console for more information.');
-        }
-    }
-}">
+<div x-data="dashboard()">
     <h1 class="text-3xl font-bold mb-6" id="welcome">Welcome, {{ current_user.username }}!</h1>
 
     <div class="bg-white rounded-lg shadow-md p-6 mb-8">
@@ -188,6 +24,18 @@
             </div>
         </div>
 
+        <div x-show="canViewCoreTable" class="mt-4 flex items-center">
+            <label class="inline-flex items-center">
+                <input type="checkbox" x-model="showCoreTable" class="form-checkbox" @change="loadTableData()">
+                <span class="ml-2">Show Core Table Data</span>
+            </label>
+            <button @click="showCoreTableInfo = true" class="ml-2 text-blue-500 hover:text-blue-700">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+                </svg>
+            </button>
+        </div>
+
         <div x-show="viewMode === 'spreadsheet'">
             <div id="spreadsheet" class="overflow-x-auto"></div>
         </div>
@@ -198,16 +46,257 @@
 
         <div x-show="viewMode === 'form'">
             <form @submit.prevent="submitForm()" class="space-y-4">
-                <template x-for="field in formFields" :key="field">
+                <template x-for="field in userFields" :key="field">
                     <div>
                         <label :for="field" class="block text-sm font-medium text-gray-700" x-text="field"></label>
-                        <input :id="field" type="text" x-model="formData[field]" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+                        <input :id="field" type="text" x-model="formData.user_data[field]" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
                     </div>
+                </template>
+                <template x-if="showCoreTable && canViewCoreTable">
+                    <template x-for="field in coreFields" :key="field">
+                        <div>
+                            <label :for="field" class="block text-sm font-medium text-gray-700" x-text="field"></label>
+                            <input :id="field" type="text" x-model="formData.core_data[field]" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 bg-gray-100">
+                        </div>
+                    </template>
                 </template>
                 <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded">Submit</button>
             </form>
         </div>
     </div>
+
+    <!-- Core Table Info Modal -->
+    <div x-show="showCoreTableInfo" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full" id="my-modal">
+        <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+            <div class="mt-3 text-center">
+                <h3 class="text-lg leading-6 font-medium text-gray-900">Core Table Information</h3>
+                <div class="mt-2 px-7 py-3">
+                    <p class="text-sm text-gray-500">
+                        The core table contains common data that is shared across multiple tables. 
+                        Enabling this option will show additional columns with this shared information.
+                        This can be useful for seeing connections between different types of data.
+                    </p>
+                </div>
+                <div class="items-center px-4 py-3">
+                    <button id="ok-btn" @click="showCoreTableInfo = false" class="px-4 py-2 bg-blue-500 text-white text-base font-medium rounded-md w-full shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
+
+<script>
+function dashboard() {
+    return {
+        selectedTable: '', 
+        viewMode: 'spreadsheet',
+        tableData: [],
+        userFields: [],
+        coreFields: [],
+        formData: {
+            user_data: {},
+            core_data: {}
+        },
+        showCoreTable: false,
+        canViewCoreTable: {{ 'true' if current_user.can_view_core_table() else 'false' }},
+        canEditCoreTable: {{ 'true' if current_user.can_edit_core_table() else 'false' }},
+        showCoreTableInfo: false,
+        async loadTableData() {
+            if (!this.selectedTable) return;
+            try {
+                const response = await fetch(`/get_table_data/${this.selectedTable}/${this.viewMode}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                if (this.viewMode === 'form') {
+                    this.userFields = data.user_fields;
+                    this.coreFields = data.core_fields;
+                    this.initForm();
+                } else {
+                    this.tableData = data;
+                }
+                if (this.viewMode === 'spreadsheet') {
+                    this.renderSpreadsheet();
+                } else if (this.viewMode === 'list') {
+                    this.renderList();
+                }
+            } catch (e) {
+                console.error('Error loading table data:', e);
+                alert('Error loading table data. Please check the console for more information.');
+            }
+        },
+        renderSpreadsheet() {
+            const container = document.getElementById('spreadsheet');
+            container.innerHTML = '';
+            if (!this.tableData || this.tableData.length === 0) {
+                container.innerHTML = '<p>No data available for this table.</p>';
+                return;
+            }
+
+            const table = document.createElement('table');
+            table.className = 'w-full border-collapse border border-gray-300';
+
+            // Create header
+            const header = table.createTHead();
+            const headerRow = header.insertRow();
+            const userData = JSON.parse(this.tableData[0].user_data);
+            const coreData = JSON.parse(this.tableData[0].core_data);
+            ['id', ...Object.keys(userData)].forEach(key => {
+                const th = document.createElement('th');
+                th.textContent = key;
+                th.className = 'border border-gray-300 p-2 bg-gray-100';
+                headerRow.appendChild(th);
+            });
+            if (this.showCoreTable && this.canViewCoreTable) {
+                Object.keys(coreData).forEach(key => {
+                    const th = document.createElement('th');
+                    th.textContent = key;
+                    th.className = 'border border-gray-300 p-2 bg-gray-200';
+                    headerRow.appendChild(th);
+                });
+            }
+
+            // Create body
+            const body = table.createTBody();
+            this.tableData.forEach(row => {
+                const tr = body.insertRow();
+                const userData = JSON.parse(row.user_data);
+                const coreData = JSON.parse(row.core_data);
+                
+                // Add id cell
+                const idCell = tr.insertCell();
+                idCell.textContent = row.id;
+                idCell.className = 'border border-gray-300 p-2';
+                
+                // Add other cells
+                Object.entries(userData).forEach(([key, value]) => {
+                    const td = tr.insertCell();
+                    td.textContent = value;
+                    td.className = 'border border-gray-300 p-2';
+                    td.contentEditable = true;
+                    td.addEventListener('blur', () => this.updateCell(row.id, key, td.textContent, 'user_data'));
+                });
+
+                if (this.showCoreTable && this.canViewCoreTable) {
+                    Object.entries(coreData).forEach(([key, value]) => {
+                        const td = tr.insertCell();
+                        td.textContent = value;
+                        td.className = 'border border-gray-300 p-2 bg-gray-100';
+                        if (this.canEditCoreTable) {
+                            td.contentEditable = true;
+                            td.addEventListener('blur', () => this.updateCell(row.id, key, td.textContent, 'core_data'));
+                        }
+                    });
+                }
+            });
+
+            container.appendChild(table);
+        },
+        renderList() {
+            const container = document.getElementById('list-view');
+            container.innerHTML = '';
+            if (!this.tableData || this.tableData.length === 0) {
+                container.innerHTML = '<p>No data available for this table.</p>';
+                return;
+            }
+            const ul = document.createElement('ul');
+            ul.className = 'space-y-4';
+            this.tableData.forEach(row => {
+                const li = document.createElement('li');
+                li.className = 'border p-4 rounded';
+                const userData = JSON.parse(row.user_data);
+                const coreData = JSON.parse(row.core_data);
+                li.innerHTML = `
+                    <p><strong>ID:</strong> ${row.id}</p>
+                    ${Object.entries(userData).map(([key, value]) => `
+                        <p><strong>${key}:</strong> ${value}</p>
+                    `).join('')}
+                    ${this.showCoreTable && this.canViewCoreTable ? Object.entries(coreData).map(([key, value]) => `
+                        <p class="bg-gray-100"><strong>${key}:</strong> ${value}</p>
+                    `).join('') : ''}
+                `;
+                ul.appendChild(li);
+            });
+            container.appendChild(ul);
+        },
+        updateCell(rowId, column, value, dataType) {
+            this.updateTableData(rowId, column, value, dataType);
+        },
+        initForm() {
+            this.formData = {
+                user_data: {},
+                core_data: {}
+            };
+            this.userFields.forEach(field => {
+                this.formData.user_data[field] = '';
+            });
+            this.coreFields.forEach(field => {
+                this.formData.core_data[field] = '';
+            });
+        },
+        async submitForm() {
+            try {
+                const response = await fetch(`/update_table_data/${this.selectedTable}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        user_data: JSON.stringify(this.formData.user_data),
+                        core_data: JSON.stringify(this.formData.core_data)
+                    }),
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const result = await response.json();
+                if (result.error) {
+                    throw new Error(result.error);
+                }
+                alert('Data added successfully!');
+                this.loadTableData();
+            } catch (e) {
+                console.error('Error adding table data:', e);
+                alert('Error adding table data. Please check the console for more information.');
+            }
+        },
+        async updateTableData(rowId, column, value, dataType) {
+            try {
+                const rowData = this.tableData.find(row => row.id === rowId);
+                if (!rowData) throw new Error('Row not found');
+                
+                const data = JSON.parse(rowData[dataType]);
+                data[column] = value;
+
+                const response = await fetch(`/update_table_data/${this.selectedTable}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        id: rowId,
+                        [dataType]: JSON.stringify(data)
+                    }),
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const result = await response.json();
+                if (result.error) {
+                    throw new Error(result.error);
+                }
+                // Update local data
+                rowData[dataType] = JSON.stringify(data);
+            } catch (e) {
+                console.error('Error updating table data:', e);
+                alert('Error updating table data. Please check the console for more information.');
+            }
+        }
+    }
+}
+</script>
 
 {% endblock %}

@@ -1,12 +1,13 @@
 from flask import Blueprint, render_template, redirect, url_for, flash, request, jsonify
 from flask_login import login_user, login_required, logout_user, current_user
 from app import db
-from app.models import User, TableMetadata
+from app.models import User, TableMetadata, CoreTable, CoreTableAssociation
 from sqlalchemy import inspect, Table, text
 import json
 import logging
 import traceback
 import sqlalchemy
+
 
 bp = Blueprint('main', __name__)
 
@@ -85,20 +86,46 @@ def get_table_data(table_name, view_mode):
         table = Table(table_name, db.metadata, autoload_with=db.engine)
         columns = [column.name for column in table.columns]
 
-        result = db.session.execute(table.select()).fetchall()
-        logging.info(f"Fetched {len(result)} rows from {table_name}")
-
         if view_mode == 'spreadsheet' or view_mode == 'list':
-            data = []
-            for row in result:
-                row_dict = {col: getattr(row, col) for col in columns}
-                data.append({
-                    'id': row_dict['id'],
-                    'user_data': json.dumps({k: str(v) for k, v in row_dict.items() if k != 'id'})
-                })
+            if current_user.can_view_core_table():
+                result = db.session.query(table, CoreTable).outerjoin(
+                    CoreTableAssociation,
+                    (CoreTableAssociation.table_name == table_name) &
+                    (CoreTableAssociation.table_id == table.c.id)
+                ).outerjoin(CoreTable).all()
+
+                data = []
+                for row in result:
+                    row_dict = dict(zip(columns, row)) if isinstance(row, tuple) else row._asdict()
+                    core_data = {}
+                    if len(row) > 1 and row[-1] is not None and isinstance(row[-1], CoreTable):
+                        core_data = {field: getattr(row[1], field, None) for field in CoreTable.get_fields()}
+                    elif len(row) > 1 and row[-1] is not None:
+                        # If row[1] is not a CoreTable object, try to parse it as JSON
+                        try:
+                            core_data = json.loads(row[-1])
+                        except json.JSONDecodeError:
+                            logging.warning(f"Could not parse core data for row {row_dict.get('id')}")
+                    data.append({
+                        'id': row_dict.get('id'),
+                        'user_data': json.dumps({k: str(v) for k, v in row_dict.items() if k != 'id'}),
+                        'core_data': json.dumps(core_data)
+                    })
+            else:
+                result = db.session.execute(table.select()).fetchall()
+                data = []
+                for row in result:
+                    row_dict = dict(zip(columns, row)) if isinstance(row, tuple) else row._asdict()
+                    data.append({
+                        'id': row_dict.get('id'),
+                        'user_data': json.dumps({k: str(v) for k, v in row_dict.items() if k != 'id'}),
+                        'core_data': '{}'
+                    })
         elif view_mode == 'form':
-            # For form view, we just need the column names
-            data = [col for col in columns if col != 'id']
+            data = {
+                'user_fields': [col for col in columns if col != 'id'],
+                'core_fields': CoreTable.get_fields() if current_user.can_view_core_table() else []
+            }
         else:
             logging.error(f"Invalid view mode: {view_mode}")
             return jsonify({'error': 'Invalid view mode'}), 400
@@ -209,8 +236,8 @@ def update_table_data(table_name):
             return jsonify({'error': 'Access denied'}), 403
 
         data = request.json
-        if not data or 'id' not in data or data['id'] is None:
-            return jsonify({'error': 'No data or ID provided'}), 400
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
     
         logging.info(f"Received data for table {table_name}: {data}")
 
@@ -220,29 +247,48 @@ def update_table_data(table_name):
             return jsonify({'error': f'Table {table_name} not found'}), 404
 
         user_data = json.loads(data['user_data'])
-        logging.info(f"Parsed user_data: {user_data}")
+        core_data = json.loads(data.get('core_data', '{}'))
+        
+        if data['id']:
+            # Update existing row
+            set_clause = ', '.join([f"{k} = :{k}" for k in user_data.keys()])
+            stmt = text(f"UPDATE {table_name} SET {set_clause} WHERE id = :id")
+            user_data['id'] = data['id']
+            db.session.execute(stmt, user_data)
+            
+            if current_user.can_edit_core_table() and core_data:
+                association = CoreTableAssociation.query.filter_by(table_name=table_name, table_id=data['id']).first()
+                if association:
+                    core = association.core
+                    for key, value in core_data.items():
+                        setattr(core, key, value)
+                else:
+                    core = CoreTable(**core_data)
+                    db.session.add(core)
+                    db.session.flush()
+                    association = CoreTableAssociation(table_name=table_name, table_id=data['id'], core_id=core.id)
+                    db.session.add(association)
+        else:
+            # Insert new row
+            columns = ', '.join(user_data.keys())
+            values = ', '.join([':' + k for k in user_data.keys()])
+            stmt = text(f"INSERT INTO {table_name} ({columns}) VALUES ({values})")
+            result = db.session.execute(stmt, user_data)
+            new_id = result.lastrowid
+            
+            if current_user.can_edit_core_table() and core_data:
+                core = CoreTable(**core_data)
+                db.session.add(core)
+                db.session.flush()
+                association = CoreTableAssociation(table_name=table_name, table_id=new_id, core_id=core.id)
+                db.session.add(association)
 
-        # Update existing row
-        set_clause = ', '.join([f"{k} = :{k}" for k in user_data.keys()])
-        stmt = text(f"UPDATE {table_name} SET {set_clause} WHERE id = :id")
-        user_data['id'] = data['id']
-        db.session.execute(stmt, user_data)
         db.session.commit()
-        logging.info(f"Updated row with id {data['id']}")
-        return jsonify({'success': True})
+        return jsonify({'success': True, 'id': new_id if 'new_id' in locals() else data['id']})
 
-    except json.JSONDecodeError as e:
-        db.session.rollback()
-        logging.error(f"JSON decode error: {str(e)}")
-        return jsonify({'error': 'Invalid JSON in user_data'}), 400
-    except sqlalchemy.exc.SQLAlchemyError as e:
-        db.session.rollback()
-        logging.error(f"Database error: {str(e)}")
-        return jsonify({'error': 'Database error occurred'}), 500
     except Exception as e:
         db.session.rollback()
         logging.error(f"Unexpected error in update_table_data: {str(e)}")
-        logging.error(traceback.format_exc())
         return jsonify({'error': 'An unexpected error occurred', 'details': str(e)}), 500
 
 @bp.route('/test_users')
