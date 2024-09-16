@@ -66,10 +66,10 @@ def dashboard():
     user_tables = {meta.table_name: meta.description for meta in table_metadata}
     return render_template('dashboard.html', tables=user_tables)
 
-@bp.route('/get_table_data/<table_name>')
+@bp.route('/get_table_data/<table_name>/<view_mode>')
 @login_required
-def get_table_data(table_name):
-    logging.info(f"Attempting to fetch data for table: {table_name}")
+def get_table_data(table_name, view_mode):
+    logging.info(f"Attempting to fetch data for table: {table_name} in {view_mode} mode")
     logging.info(f"User {current_user.username} accessible tables: {current_user.get_accessible_tables()}")
 
     if table_name not in current_user.get_accessible_tables():
@@ -88,15 +88,22 @@ def get_table_data(table_name):
         result = db.session.execute(table.select()).fetchall()
         logging.info(f"Fetched {len(result)} rows from {table_name}")
 
-        data = []
-        for row in result:
-            row_dict = {col: getattr(row, col) for col in columns}
-            data.append({
-                'id': row_dict['id'],
-                'user_data': json.dumps({k: str(v) for k, v in row_dict.items() if k != 'id'})
-            })
+        if view_mode == 'spreadsheet' or view_mode == 'list':
+            data = []
+            for row in result:
+                row_dict = {col: getattr(row, col) for col in columns}
+                data.append({
+                    'id': row_dict['id'],
+                    'user_data': json.dumps({k: str(v) for k, v in row_dict.items() if k != 'id'})
+                })
+        elif view_mode == 'form':
+            # For form view, we just need the column names
+            data = [col for col in columns if col != 'id']
+        else:
+            logging.error(f"Invalid view mode: {view_mode}")
+            return jsonify({'error': 'Invalid view mode'}), 400
 
-        logging.info(f"Returning {len(data)} rows of data for {table_name}")
+        logging.info(f"Returning data for {table_name} in {view_mode} mode")
         return jsonify(data)
     except Exception as e:
         logging.error(f"Error fetching data for {table_name}: {str(e)}")
@@ -149,9 +156,9 @@ def seed_sample_data():
         logging.error(f"Error seeding sample data: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-@bp.route('/update_table_data/<table_name>', methods=['POST'])
+@bp.route('/add_table_data/<table_name>', methods=['POST'])
 @login_required
-def update_table_data(table_name):
+def add_table_data(table_name):
     try:
         if not current_user.can_edit(table_name):
             return jsonify({'error': 'Access denied'}), 403
@@ -159,7 +166,7 @@ def update_table_data(table_name):
         data = request.json
         if not data:
             return jsonify({'error': 'No data provided'}), 400
-
+    
         logging.info(f"Received data for table {table_name}: {data}")
 
         # Check if the table exists
@@ -170,25 +177,59 @@ def update_table_data(table_name):
         user_data = json.loads(data['user_data'])
         logging.info(f"Parsed user_data: {user_data}")
 
-        if data['id'] is None:
-            # Insert new row
-            columns = ', '.join(user_data.keys())
-            values = ', '.join([':' + k for k in user_data.keys()])
-            stmt = text(f"INSERT INTO {table_name} ({columns}) VALUES ({values})")
-            result = db.session.execute(stmt, user_data)
-            new_id = result.lastrowid
-            db.session.commit()
-            logging.info(f"Inserted new row with id {new_id}")
-            return jsonify({'success': True, 'id': new_id})
-        else:
-            # Update existing row
-            set_clause = ', '.join([f"{k} = :{k}" for k in user_data.keys()])
-            stmt = text(f"UPDATE {table_name} SET {set_clause} WHERE id = :id")
-            user_data['id'] = data['id']
-            db.session.execute(stmt, user_data)
-            db.session.commit()
-            logging.info(f"Updated row with id {data['id']}")
-            return jsonify({'success': True})
+        # Insert new row
+        columns = ', '.join(user_data.keys())
+        values = ', '.join([':' + k for k in user_data.keys()])
+        stmt = text(f"INSERT INTO {table_name} ({columns}) VALUES ({values})")
+        result = db.session.execute(stmt, user_data)
+        new_id = result.lastrowid
+        db.session.commit()
+        logging.info(f"Inserted new row with id {new_id}")
+        return jsonify({'success': True, 'id': new_id})
+
+    except json.JSONDecodeError as e:
+        db.session.rollback()
+        logging.error(f"JSON decode error: {str(e)}")
+        return jsonify({'error': 'Invalid JSON in user_data'}), 400
+    except sqlalchemy.exc.SQLAlchemyError as e:
+        db.session.rollback()
+        logging.error(f"Database error: {str(e)}")
+        return jsonify({'error': 'Database error occurred'}), 500
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Unexpected error in add_table_data: {str(e)}")
+        logging.error(traceback.format_exc())
+        return jsonify({'error': 'An unexpected error occurred', 'details': str(e)}), 500
+
+@bp.route('/update_table_data/<table_name>', methods=['POST'])
+@login_required
+def update_table_data(table_name):
+    try:
+        if not current_user.can_edit(table_name):
+            return jsonify({'error': 'Access denied'}), 403
+
+        data = request.json
+        if not data or 'id' not in data or data['id'] is None:
+            return jsonify({'error': 'No data or ID provided'}), 400
+    
+        logging.info(f"Received data for table {table_name}: {data}")
+
+        # Check if the table exists
+        inspector = db.inspect(db.engine)
+        if not inspector.has_table(table_name):
+            return jsonify({'error': f'Table {table_name} not found'}), 404
+
+        user_data = json.loads(data['user_data'])
+        logging.info(f"Parsed user_data: {user_data}")
+
+        # Update existing row
+        set_clause = ', '.join([f"{k} = :{k}" for k in user_data.keys()])
+        stmt = text(f"UPDATE {table_name} SET {set_clause} WHERE id = :id")
+        user_data['id'] = data['id']
+        db.session.execute(stmt, user_data)
+        db.session.commit()
+        logging.info(f"Updated row with id {data['id']}")
+        return jsonify({'success': True})
 
     except json.JSONDecodeError as e:
         db.session.rollback()

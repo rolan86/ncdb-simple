@@ -1,35 +1,180 @@
 {% extends "base.html" %}
-
-{% block head %}
-{{ super() }}
-<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
-<style>
-    .editable:hover { background-color: #f0f0f0; cursor: pointer; }
-    .editing { background-color: #e0e0e0; }
-</style>
-{% endblock %}
-
 {% block content %}
-<div id="dashboard-app" x-data="dashboard">
-    <h1 class="text-3xl font-bold mb-6">Welcome, {{ current_user.username }}!</h1>
 
-    <div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-4">
-        <h2 class="font-bold">Debug Information:</h2>
-        <p>Available Tables:</p>
-        <ul>
-        {% for table_name, description in tables.items() %}
-            <li>{{ table_name }}: {{ description }}</li>
-        {% endfor %}
-        </ul>
-    </div>
+<div x-data="{ 
+    selectedTable: '', 
+    viewMode: 'spreadsheet',
+    tableData: [],
+    formFields: [],
+    formData: {},
+    async loadTableData() {
+        if (!this.selectedTable) return;
+        try {
+            const response = await fetch(`/get_table_data/${this.selectedTable}/${this.viewMode}`);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const data = await response.json();
+            if (this.viewMode === 'form') {
+                this.formFields = data;
+                this.initForm();
+            } else {
+                this.tableData = data;
+            }
+            if (this.viewMode === 'spreadsheet') {
+                this.renderSpreadsheet();
+            } else if (this.viewMode === 'list') {
+                this.renderList();
+            }
+        } catch (e) {
+            console.error('Error loading table data:', e);
+            alert('Error loading table data. Please check the console for more information.');
+        }
+    },
+    renderSpreadsheet() {
+        const container = document.getElementById('spreadsheet');
+        container.innerHTML = '';
+        if (!this.tableData || this.tableData.length === 0) {
+            container.innerHTML = '<p>No data available for this table.</p>';
+            return;
+        }
+
+        const table = document.createElement('table');
+        table.className = 'w-full border-collapse border border-gray-300';
+
+        // Create header
+        const header = table.createTHead();
+        const headerRow = header.insertRow();
+        const userData = JSON.parse(this.tableData[0].user_data);
+        ['id', ...Object.keys(userData)].forEach(key => {
+            const th = document.createElement('th');
+            th.textContent = key;
+            th.className = 'border border-gray-300 p-2 bg-gray-100';
+            headerRow.appendChild(th);
+        });
+
+        // Create body
+        const body = table.createTBody();
+        this.tableData.forEach(row => {
+            const tr = body.insertRow();
+            const userData = JSON.parse(row.user_data);
+            
+            // Add id cell
+            const idCell = tr.insertCell();
+            idCell.textContent = row.id;
+            idCell.className = 'border border-gray-300 p-2';
+            
+            // Add other cells
+            Object.entries(userData).forEach(([key, value]) => {
+                const td = tr.insertCell();
+                td.textContent = value;
+                td.className = 'border border-gray-300 p-2';
+                td.contentEditable = true;
+                td.addEventListener('blur', () => this.updateCell(row.id, key, td.textContent));
+            });
+        });
+
+        container.appendChild(table);
+    },
+    renderList() {
+        const container = document.getElementById('list-view');
+        container.innerHTML = '';
+        if (!this.tableData || this.tableData.length === 0) {
+            container.innerHTML = '<p>No data available for this table.</p>';
+            return;
+        }
+        const ul = document.createElement('ul');
+        ul.className = 'space-y-4';
+        this.tableData.forEach(row => {
+            const li = document.createElement('li');
+            li.className = 'border p-4 rounded';
+            const userData = JSON.parse(row.user_data);
+            li.innerHTML = `
+                <p><strong>ID:</strong> ${row.id}</p>
+                ${Object.entries(userData).map(([key, value]) => `
+                    <p><strong>${key}:</strong> ${value}</p>
+                `).join('')}
+            `;
+            ul.appendChild(li);
+        });
+        container.appendChild(ul);
+    },
+    updateCell(rowId, column, value) {
+        this.updateTableData(rowId, column, value);
+    },
+    initForm() {
+        this.formData = {};
+        this.formFields.forEach(field => {
+            this.formData[field] = '';
+        });
+    },
+    async submitForm() {
+        try {
+            const response = await fetch(`/add_table_data/${this.selectedTable}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    user_data: JSON.stringify(this.formData)
+                }),
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const result = await response.json();
+            if (result.error) {
+                throw new Error(result.error);
+            }
+            alert('Data added successfully!');
+            this.loadTableData();
+        } catch (e) {
+            console.error('Error adding table data:', e);
+            alert('Error adding table data. Please check the console for more information.');
+        }
+    },
+    async updateTableData(rowId, column, value) {
+        try {
+            const rowData = this.tableData.find(row => row.id === rowId);
+            if (!rowData) throw new Error('Row not found');
+            
+            const userData = JSON.parse(rowData.user_data);
+            userData[column] = value;
+
+            const response = await fetch(`/update_table_data/${this.selectedTable}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    id: rowId,
+                    user_data: JSON.stringify(userData)
+                }),
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const result = await response.json();
+            if (result.error) {
+                throw new Error(result.error);
+            }
+            // Update local data
+            rowData.user_data = JSON.stringify(userData);
+        } catch (e) {
+            console.error('Error updating table data:', e);
+            alert('Error updating table data. Please check the console for more information.');
+        }
+    }
+}">
+    <h1 class="text-3xl font-bold mb-6" id="welcome">Welcome, {{ current_user.username }}!</h1>
 
     <div class="bg-white rounded-lg shadow-md p-6 mb-8">
         <h2 class="text-xl font-semibold mb-4">Select a Table</h2>
         <select x-model="selectedTable" @change="loadTableData()" class="w-full p-2 border rounded">
             <option value="">Choose a table</option>
-            <template x-for="(description, table_name) in tables" :key="table_name">
-                <option :value="table_name" x-text="description"></option>
-            </template>
+            {% for table_name, description in tables.items() %}
+                <option value="{{ table_name }}">{{ description }}</option>
+            {% endfor %}
         </select>
     </div>
 
@@ -37,203 +182,32 @@
         <div class="flex justify-between items-center mb-6">
             <h2 class="text-2xl font-bold" x-text="selectedTable"></h2>
             <div class="flex space-x-2">
-                <button @click="viewMode = 'table'" :class="{ 'bg-blue-500 text-white': viewMode === 'table' }" class="px-4 py-2 rounded">Table</button>
-                <button @click="viewMode = 'list'" :class="{ 'bg-blue-500 text-white': viewMode === 'list' }" class="px-4 py-2 rounded">List</button>
-                <button x-show="canEdit" @click="viewMode = 'form'" :class="{ 'bg-blue-500 text-white': viewMode === 'form' }" class="px-4 py-2 rounded">Form</button>
+                <button @click="viewMode = 'spreadsheet'; loadTableData()" :class="{'bg-blue-500 text-white': viewMode === 'spreadsheet'}" class="px-4 py-2 rounded">Spreadsheet</button>
+                <button @click="viewMode = 'list'; loadTableData()" :class="{'bg-blue-500 text-white': viewMode === 'list'}" class="px-4 py-2 rounded">List</button>
+                <button @click="viewMode = 'form'; loadTableData()" :class="{'bg-blue-500 text-white': viewMode === 'form'}" class="px-4 py-2 rounded">Form</button>
             </div>
         </div>
 
-        <div x-show="viewMode === 'table'" class="overflow-x-auto">
-            <table class="min-w-full bg-white">
-                <thead>
-                    <tr>
-                        <th class="px-4 py-2 bg-gray-100">ID</th>
-                        <template x-for="column in columns">
-                            <th class="px-4 py-2 bg-gray-100" x-text="column"></th>
-                        </template>
-                    </tr>
-                </thead>
-                <tbody>
-                    <template x-for="row in tableData" :key="row.id">
-                        <tr>
-                            <td class="border px-4 py-2" x-text="row.id"></td>
-                            <template x-for="column in columns">
-                                <td class="border px-4 py-2 editable"
-                                    :class="{'editing': editingCell.row == row.id && editingCell.column == column}"
-                                    @click="startEditing(row.id, column)"
-                                    x-text="JSON.parse(row.user_data)[column]"></td>
-                            </template>
-                        </tr>
-                    </template>
-                </tbody>
-            </table>
-            <div x-show="editingCell.row !== null" class="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center">
-                <div class="bg-white p-4 rounded shadow">
-                    <input type="text" x-model="editingCell.value" @keyup.enter="saveEdit" @keyup.esc="cancelEdit" class="border p-2 mb-2">
-                    <div class="flex justify-end space-x-2">
-                        <button @click="saveEdit" class="bg-blue-500 text-white px-4 py-2 rounded">Save</button>
-                        <button @click="cancelEdit" class="bg-gray-300 px-4 py-2 rounded">Cancel</button>
+        <div x-show="viewMode === 'spreadsheet'">
+            <div id="spreadsheet" class="overflow-x-auto"></div>
+        </div>
+
+        <div x-show="viewMode === 'list'">
+            <div id="list-view" class="space-y-4"></div>
+        </div>
+
+        <div x-show="viewMode === 'form'">
+            <form @submit.prevent="submitForm()" class="space-y-4">
+                <template x-for="field in formFields" :key="field">
+                    <div>
+                        <label :for="field" class="block text-sm font-medium text-gray-700" x-text="field"></label>
+                        <input :id="field" type="text" x-model="formData[field]" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
                     </div>
-                </div>
-            </div>
+                </template>
+                <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded">Submit</button>
+            </form>
         </div>
-
-        <div x-show="viewMode === 'list'" class="space-y-4">
-            <template x-for="item in tableData" :key="item.id">
-                <div class="border p-4 rounded">
-                    <h3 class="font-bold mb-2" x-text="`ID: ${item.id}`"></h3>
-                    <template x-for="(value, key) in JSON.parse(item.user_data)" :key="key">
-                        <p x-text="`${key}: ${value}`"></p>
-                    </template>
-                </div>
-            </template>
-        </div>
-
-        <div x-show="viewMode === 'form' && canEdit" class="space-y-4">
-            <h3 class="text-xl font-semibold mb-4">Add New Entry</h3>
-            <template x-for="column in columns">
-                <div class="mb-4">
-                    <label :for="column" class="block mb-2" x-text="column"></label>
-                    <input :id="column" x-model="newRowData[column]" type="text" class="w-full p-2 border rounded">
-                </div>
-            </template>
-            <button @click="submitNewRow()" class="bg-blue-500 text-white px-4 py-2 rounded">Submit</button>
-        </div>
-    </div>
-
-    <div class="mt-4 p-4 bg-gray-100 rounded">
-        <h3 class="font-bold">Debug Info:</h3>
-        <p>Selected Table: <span x-text="selectedTable"></span></p>
-        <p>View Mode: <span x-text="viewMode"></span></p>
-        <p>Can Edit: <span x-text="canEdit"></span></p>
-        <p>Table Data Length: <span x-text="tableData.length"></span></p>
     </div>
 </div>
 
-<script>
-document.addEventListener('alpine:init', () => {
-    Alpine.data('dashboard', () => ({
-        selectedTable: '',
-        viewMode: 'table',
-        tableData: [],
-        columns: [],
-        canEdit: false,
-        newRowData: {},
-        tables: {{ tables | tojson | safe }},
-        editingCell: { row: null, column: null, value: '' },
-        async loadTableData() {
-            if (!this.selectedTable) return;
-            try {
-                const response = await fetch(`/get_table_data/${this.selectedTable}`);
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                this.tableData = await response.json();
-                console.log('Loaded table data:', this.tableData);
-                this.canEdit = await this.checkEditPermission();
-                this.initColumns();
-                this.initNewRowData();
-            } catch (e) {
-                console.error('Error loading table data:', e);
-                alert('Error loading table data. Please check the console for more information.');
-            }
-        },
-        async checkEditPermission() {
-            const response = await fetch(`/check_edit_permission/${this.selectedTable}`);
-            const data = await response.json();
-            return data.canEdit;
-        },
-        initColumns() {
-            if (this.tableData.length > 0) {
-                this.columns = Object.keys(JSON.parse(this.tableData[0].user_data));
-            }
-        },
-        initNewRowData() {
-            this.newRowData = {};
-            this.columns.forEach(column => {
-                this.newRowData[column] = '';
-            });
-        },
-        startEditing(rowId, column) {
-            if (!this.canEdit) return;
-            const row = this.tableData.find(r => r.id === rowId);
-            const value = JSON.parse(row.user_data)[column];
-            this.editingCell = { row: rowId, column, value };
-        },
-        saveEdit() {
-            const row = this.tableData.find(r => r.id === this.editingCell.row);
-            const userData = JSON.parse(row.user_data);
-            userData[this.editingCell.column] = this.editingCell.value;
-            row.user_data = JSON.stringify(userData);
-            this.updateTableData(row);
-            this.cancelEdit();
-        },
-        cancelEdit() {
-            this.editingCell = { row: null, column: null, value: '' };
-        },
-        async updateTableData(rowData) {
-            try {
-                const response = await fetch(`/update_table_data/${this.selectedTable}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        id: rowData.id,
-                        user_data: rowData.user_data
-                    }),
-                });
-
-                const contentType = response.headers.get("content-type");
-                if (contentType && contentType.indexOf("application/json") !== -1) {
-                    const result = await response.json();
-                    if (!response.ok) {
-                        throw new Error(result.error || `HTTP error! status: ${response.status}`);
-                    }
-                    if (result.error) {
-                        throw new Error(result.error);
-                    }
-                    console.log('Row updated successfully');
-                } else {
-                    // If the response is not JSON, log the text content
-                    const text = await response.text();
-                    console.error('Received non-JSON response:', text);
-                    throw new Error('Received non-JSON response from server');
-                }
-            } catch (e) {
-                console.error('Error updating row:', e);
-                alert(`Error updating row: ${e.message}. Please check the console for more information.`);
-                // Optionally, you could revert the changes in the UI here
-            }
-        },
-        async submitNewRow() {
-            try {
-                const response = await fetch(`/update_table_data/${this.selectedTable}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        id: null,
-                        user_data: JSON.stringify(this.newRowData)
-                    }),
-                });
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                const result = await response.json();
-                if (result.error) {
-                    throw new Error(result.error);
-                }
-                console.log('New row added successfully');
-                this.loadTableData();
-                this.initNewRowData();
-            } catch (e) {
-                console.error('Error adding new row:', e);
-                alert(`Error adding new row: ${e.message}. Please check the console for more information.`);
-            }
-        }
-    }));
-});
-</script>
 {% endblock %}
